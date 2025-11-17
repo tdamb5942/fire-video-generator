@@ -40,3 +40,4 @@ config.ini
 # Notes (keep local only)
 *.md
 !README.md
+!CLAUDE.md
