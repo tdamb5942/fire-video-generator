@@ -16,6 +16,12 @@ temp_frames/
 *.avi
 *.mov
 
+# Input/Output directories
+outputs/
+inputs/*.geojson
+!inputs/example.geojson
+.cache/
+
 # IDE
 .idea/
 .vscode/
