@@ -19,7 +19,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from io import StringIO
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import geopandas as gpd
 import pandas as pd
@@ -52,6 +51,10 @@ SOURCE = "MODIS_SP"
 CACHE_DIR = Path("outputs/cache")
 FRAMES_DIR = Path("outputs/frames")
 VIDEOS_DIR = Path("outputs/videos")
+
+# Rate limiting for API requests (now using sequential processing)
+_last_api_call_time = None
+API_CALL_DELAY = 0.3  # Minimum seconds between API calls - conservative but not too slow
 
 
 def get_map_key():
@@ -145,7 +148,7 @@ def get_bounding_box(aoi):
     return f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}"
 
 
-def generate_date_chunks(start_date, end_date, chunk_size=10):
+def generate_date_chunks(start_date, end_date, chunk_size=10, max_total_days=None):
     """
     Generate date ranges in chunks (NASA FIRMS API limit is 10 days).
 
@@ -153,12 +156,23 @@ def generate_date_chunks(start_date, end_date, chunk_size=10):
         start_date (datetime): Start date
         end_date (datetime): End date
         chunk_size (int): Maximum days per chunk (default 10)
+        max_total_days (int): Maximum total days to request in single batch (helps avoid API issues)
 
     Yields:
         tuple: (chunk_start, chunk_end, day_range) for each chunk
     """
-    current = start_date
+    # If max_total_days specified, break into year-sized batches
+    if max_total_days and (end_date - start_date).days > max_total_days:
+        batch_start = start_date
+        while batch_start <= end_date:
+            batch_end = min(batch_start + timedelta(days=max_total_days - 1), end_date)
+            # Recursively generate chunks for this batch
+            for chunk_start, chunk_end, day_range in generate_date_chunks(batch_start, batch_end, chunk_size, None):
+                yield chunk_start, chunk_end, day_range
+            batch_start = batch_end + timedelta(days=1)
+        return
 
+    current = start_date
     while current <= end_date:
         chunk_end = min(current + timedelta(days=chunk_size - 1), end_date)
         day_range = (chunk_end - current).days + 1
@@ -195,41 +209,66 @@ def fetch_single_chunk(args):
         try:
             content = cache_path.read_text()
             if content == "No data":
-                return None, True, False  # None, from_cache, api_called
+                return None, True, False, None  # None, from_cache, api_called, error
             df = pd.read_csv(cache_path)
-            return df, True, False
+            return df, True, False, None
         except Exception:
             pass  # Fall through to API call
 
-    # Make API request
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+    # Make API request with retries
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Global rate limiting - ensure minimum delay between API calls
+            global _last_api_call_time
+            if _last_api_call_time is not None:
+                elapsed = time.time() - _last_api_call_time
+                if elapsed < API_CALL_DELAY:
+                    time.sleep(API_CALL_DELAY - elapsed)
+            _last_api_call_time = time.time()
 
-        # Handle "No data" response
-        if response.text.strip().lower() == "no data":
-            if use_cache:
-                cache_path.write_text("No data")
-            return None, False, True
+            # Add small delay to respect API rate limits
+            if attempt > 0:
+                time.sleep(1 + attempt)  # Increasing delay on retries
 
-        # Parse CSV response
-        df = pd.read_csv(StringIO(response.text))
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
 
-        if not df.empty:
-            # Cache the response
-            if use_cache:
-                df.to_csv(cache_path, index=False)
-            return df, False, True
+            # Handle "No data" response
+            if response.text.strip().lower() == "no data":
+                if use_cache:
+                    cache_path.write_text("No data")
+                return None, False, True, None
 
-        return None, False, True
+            # Parse CSV response
+            df = pd.read_csv(StringIO(response.text))
 
-    except requests.exceptions.RequestException:
-        return None, False, True
+            if not df.empty:
+                # Cache the response
+                if use_cache:
+                    df.to_csv(cache_path, index=False)
+                return df, False, True, None
+
+            return None, False, True, None
+
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                # Retry with exponential backoff - longer delays for 403 errors (rate limiting)
+                if "403" in str(e) or "Forbidden" in str(e):
+                    delay = 5 * (2 ** attempt)  # 5, 10, 20 seconds for rate limit errors
+                else:
+                    delay = 2 ** attempt  # 1, 2, 4 seconds for other errors
+                time.sleep(delay)
+                continue
+            else:
+                # All retries failed
+                return None, False, True, f"Failed after {max_retries} attempts: {str(e)}"
 
 
 def fetch_fire_data(map_key, bbox, start_date, end_date, use_cache=False):
     """
     Fetch fire data from NASA FIRMS API in 10-day chunks using parallel requests.
+    Automatically processes in yearly batches to avoid API limitations.
 
     Args:
         map_key (str): NASA FIRMS MAP_KEY
@@ -241,7 +280,9 @@ def fetch_fire_data(map_key, bbox, start_date, end_date, use_cache=False):
     Returns:
         pd.DataFrame: Combined fire data from all chunks
     """
-    chunks = list(generate_date_chunks(start_date, end_date))
+    # Process in yearly batches to avoid API rate limits and data loss
+    # NASA FIRMS API seems to have undocumented limits on long date ranges
+    chunks = list(generate_date_chunks(start_date, end_date, max_total_days=365))
 
     print(f"\nFetching fire data from {start_date.date()} to {end_date.date()}")
     print(f"Total chunks to process: {len(chunks)}")
@@ -256,24 +297,26 @@ def fetch_fire_data(map_key, bbox, start_date, end_date, use_cache=False):
     all_data = []
     cache_hits = 0
     api_calls = 0
+    errors = []
 
-    # Use ThreadPoolExecutor for parallel API requests (10x speedup!)
-    max_workers = min(20, len(chunks))  # Max 20 parallel requests
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        future_to_chunk = {executor.submit(fetch_single_chunk, arg): arg for arg in chunk_args}
+    # Process API requests SEQUENTIALLY to ensure 100% reliability
+    # Parallel requests were causing 403 rate limit errors and data loss
+    # Slower but guarantees complete data retrieval
+    print("Processing requests sequentially for maximum reliability...")
 
-        # Process completed tasks with progress bar
-        for future in tqdm(as_completed(future_to_chunk), total=len(chunks), desc="Fetching API data"):
-            df, from_cache, api_called = future.result()
+    for chunk_arg in tqdm(chunk_args, desc="Fetching API data", unit="chunk"):
+        df, from_cache, api_called, error = fetch_single_chunk(chunk_arg)
 
-            if df is not None:
-                all_data.append(df)
+        if df is not None:
+            all_data.append(df)
 
-            if from_cache:
-                cache_hits += 1
-            if api_called:
-                api_calls += 1
+        if error:
+            errors.append((chunk_arg[0], chunk_arg[1], error))
+
+        if from_cache:
+            cache_hits += 1
+        if api_called:
+            api_calls += 1
 
     if not all_data:
         print("\nWarning: No fire data found for the specified date range and area")
@@ -286,6 +329,13 @@ def fetch_fire_data(map_key, bbox, start_date, end_date, use_cache=False):
     combined_df = combined_df.drop_duplicates()
 
     print(f"\nCache statistics: {cache_hits} hits, {api_calls} API calls")
+    if errors:
+        print(f"WARNING: {len(errors)} API call(s) failed!")
+        print("Failed date ranges:")
+        for start, end, err in errors[:10]:  # Show first 10 errors
+            print(f"  {start.date()} to {end.date()}: {err}")
+        if len(errors) > 10:
+            print(f"  ... and {len(errors) - 10} more")
     print(f"Total fire detections retrieved: {len(combined_df)}")
 
     return combined_df
@@ -531,9 +581,14 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             else:
                 period_fires.plot(ax=ax, color='red', markersize=50, alpha=0.6)
 
-        # Set bounds and labels
-        ax.set_xlim(bounds[0], bounds[2])
-        ax.set_ylim(bounds[1], bounds[3])
+        # Set bounds and labels with padding to zoom out slightly
+        # Add 8% padding on each side to prevent boundary touching video edges
+        x_range = bounds[2] - bounds[0]
+        y_range = bounds[3] - bounds[1]
+        padding_x = x_range * 0.08
+        padding_y = y_range * 0.08
+        ax.set_xlim(bounds[0] - padding_x, bounds[2] + padding_x)
+        ax.set_ylim(bounds[1] - padding_y, bounds[3] + padding_y)
 
         if use_basemap:
             # Remove axis labels for cleaner map view
@@ -547,13 +602,21 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             ax.tick_params(colors='#e0e0e0')
 
         # Set title with creative styling (dark mode)
-        # Dynamic title showing full date range
+        # Dynamic title showing full date range and unit
         if interval == 'monthly':
             start_label = overall_start.strftime("%b '%y")
             end_label = overall_end.strftime("%b '%y")
-            title_text = f'Fire Activity  •  {start_label}-{end_label}'
+            # Include the unit being measured in the title
+            if weight_by == 'frp':
+                unit_label = 'Fire Radiative Power (MW)'
+            else:
+                unit_label = 'Fire Detections'
+            title_text = f'{unit_label}  •  {start_label}-{end_label}'
         else:
-            title_text = f'Fire Activity  •  {label}'
+            if weight_by == 'frp':
+                title_text = f'Fire Radiative Power (MW)  •  {label}'
+            else:
+                title_text = f'Fire Detections  •  {label}'
         ax.set_title(title_text, fontsize=19, fontweight='bold',
                     pad=25, color='#e0e0e0',
                     bbox=dict(boxstyle='round,pad=0.4', facecolor='#3d3d3d',
@@ -582,8 +645,8 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             else:
                 stats_text = f'{len(period_fires):,} Detections'
 
-        # Styled info box (dark mode)
-        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+        # Styled info box (dark mode) - positioned further inside with clear whitespace
+        ax.text(0.05, 0.95, stats_text, transform=ax.transAxes,
                 fontsize=12, verticalalignment='top', fontweight='600',
                 color='#e0e0e0', family='monospace',
                 bbox=dict(boxstyle='round,pad=0.6', facecolor='#3d3d3d',
@@ -695,7 +758,7 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
     return frame_files
 
 
-def compile_video(frame_files, output_path, fps=3):
+def compile_video(frame_files, output_path, fps=3, hold_last_frame=3):
     """
     Compile frames into MP4 video.
 
@@ -703,6 +766,7 @@ def compile_video(frame_files, output_path, fps=3):
         frame_files (list): List of frame file paths
         output_path (str): Output video file path
         fps (int): Frames per second
+        hold_last_frame (int): Number of extra frames to hold the last frame (default: 3)
     """
     print(f"\nCompiling video: {output_path}")
     print(f"Total frames: {len(frame_files)}, FPS: {fps}")
@@ -711,6 +775,12 @@ def compile_video(frame_files, output_path, fps=3):
     frames = []
     for frame_file in tqdm(frame_files, desc="Loading frames"):
         frames.append(iio.imread(frame_file))
+
+    # Hold the last frame for a few extra frames to avoid abrupt ending
+    if frames and hold_last_frame > 0:
+        last_frame = frames[-1]
+        for _ in range(hold_last_frame):
+            frames.append(last_frame)
 
     # Write video with H.264 codec
     iio.imwrite(
@@ -724,9 +794,10 @@ def compile_video(frame_files, output_path, fps=3):
 
     print(f"Video saved: {output_path}")
 
-    # Calculate video duration
-    duration = len(frame_files) / fps
-    print(f"Video duration: {duration:.1f} seconds")
+    # Calculate video duration (including held frames)
+    total_frames = len(frame_files) + hold_last_frame
+    duration = total_frames / fps
+    print(f"Video duration: {duration:.1f} seconds ({total_frames} frames)")
 
 
 def cleanup_frames(frame_dir):
@@ -870,11 +941,14 @@ Examples:
                                              weight_by='count')
     print(f"✓ Frequency frame rendering completed in {time.time() - t3:.1f}s")
 
-    # Generate output filename for frequency video
+    # Generate output filenames with format: OUTPUT_{FREQUENCY/INTENSITY}_{StartDate}_{EndDate}_{AOI_name}.mp4
+    input_filename = Path(args.geojson).stem
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+
     output_path = Path(args.output)
     output_dir = output_path.parent
-    output_stem = output_path.stem
-    output_freq = output_dir / f"{output_stem}_frequency.mp4"
+    output_freq = output_dir / f"OUTPUT_FREQUENCY_{start_str}_{end_str}_{input_filename}.mp4"
 
     print(f"\n[4/6] Compiling FREQUENCY video...")
     t4 = time.time()
@@ -894,7 +968,7 @@ Examples:
     print(f"✓ Intensity frame rendering completed in {time.time() - t5:.1f}s")
 
     # Generate output filename for intensity video
-    output_intens = output_dir / f"{output_stem}_intensity.mp4"
+    output_intens = output_dir / f"OUTPUT_INTENSITY_{start_str}_{end_str}_{input_filename}.mp4"
 
     print(f"\n[6/6] Compiling INTENSITY video...")
     t6 = time.time()

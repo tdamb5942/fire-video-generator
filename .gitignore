@@ -36,3 +36,7 @@ Thumbs.db
 .env
 config.ini
 *_key.txt
+
+# Notes (keep local only)
+*.md
+!README.md
