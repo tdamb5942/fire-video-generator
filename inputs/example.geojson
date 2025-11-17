@@ -1,0 +1,24 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Test Area - Northern California",
+        "description": "Small rectangular area for testing fire timelapse generator"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-122.5, 37.5],
+            [-122.0, 37.5],
+            [-122.0, 38.0],
+            [-122.5, 38.0],
+            [-122.5, 37.5]
+          ]
+        ]
+      }
+    }
+  ]
+}

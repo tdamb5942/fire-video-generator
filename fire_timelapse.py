@@ -39,6 +39,12 @@ try:
 except ImportError:
     HAS_CONTEXTILY = False
 
+try:
+    from dotenv import load_dotenv
+    HAS_DOTENV = True
+except ImportError:
+    HAS_DOTENV = False
+
 
 # Configuration
 API_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
@@ -50,7 +56,7 @@ VIDEOS_DIR = Path("outputs/videos")
 
 def get_map_key():
     """
-    Retrieve NASA FIRMS MAP_KEY from environment variable or config file.
+    Retrieve NASA FIRMS MAP_KEY from .env file, environment variable, or config file.
 
     Returns:
         str: The MAP_KEY for API authentication
@@ -58,7 +64,11 @@ def get_map_key():
     Raises:
         SystemExit: If MAP_KEY is not configured
     """
-    # Try environment variable first
+    # Load .env file if available
+    if HAS_DOTENV:
+        load_dotenv()
+
+    # Try environment variable first (includes .env variables)
     map_key = os.environ.get("FIRMS_MAP_KEY")
 
     if not map_key:
@@ -75,8 +85,9 @@ def get_map_key():
     if not map_key:
         print("ERROR: NASA FIRMS MAP_KEY not configured!", file=sys.stderr)
         print("\nPlease set the MAP_KEY using one of these methods:", file=sys.stderr)
-        print("  1. Environment variable: export FIRMS_MAP_KEY='your_key_here'", file=sys.stderr)
-        print("  2. Create config.json: {\"MAP_KEY\": \"your_key_here\"}", file=sys.stderr)
+        print("  1. Create .env file: FIRMS_MAP_KEY=your_key_here", file=sys.stderr)
+        print("  2. Environment variable: export FIRMS_MAP_KEY='your_key_here'", file=sys.stderr)
+        print("  3. Create config.json: {\"MAP_KEY\": \"your_key_here\"}", file=sys.stderr)
         print("\nGet your free MAP_KEY at: https://firms.modaps.eosdis.nasa.gov/api/map_key/", file=sys.stderr)
         sys.exit(1)
 

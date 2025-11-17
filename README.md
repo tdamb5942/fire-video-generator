@@ -30,6 +30,7 @@ This project uses `uv` for dependency management. The required packages are:
 - imageio-ffmpeg >= 0.4.9
 - shapely >= 2.0.0
 - tqdm >= 4.66.0
+- python-dotenv >= 1.0.0 (for .env file support)
 - contextily >= 1.3.0 (optional, for basemap overlays)
 
 ## Project Structure
@@ -71,12 +72,18 @@ You need a free NASA FIRMS MAP_KEY to use this tool.
 
 Choose one of these methods:
 
-**Option 1: Environment Variable (Recommended)**
+**Option 1: .env File (Recommended)**
+Create a `.env` file in the project directory:
+```bash
+FIRMS_MAP_KEY=your_32_character_key_here
+```
+
+**Option 2: Environment Variable**
 ```bash
 export FIRMS_MAP_KEY='your_32_character_key_here'
 ```
 
-**Option 2: Config File**
+**Option 3: Config File**
 Create a `config.json` file in the project directory:
 ```json
 {
