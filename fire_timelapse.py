@@ -798,8 +798,8 @@ Examples:
     parser.add_argument('end_date', help='End date (YYYY-MM-DD)')
     parser.add_argument('-o', '--output', default=None,
                         help='Output video filename (default: outputs/videos/OUTPUT_{input_filename}.mp4)')
-    parser.add_argument('--fps', type=int, default=2,
-                        help='Frames per second (default: 2, slower for better viewing)')
+    parser.add_argument('--fps', type=int, default=3,
+                        help='Frames per second (default: 3, slower for better viewing)')
     parser.add_argument('--cache', action='store_true',
                         help='Cache API responses for development')
     parser.add_argument('--keep-frames', action='store_true',
@@ -807,9 +807,9 @@ Examples:
     parser.add_argument('--basemap', choices=['osm', 'satellite', 'terrain', 'none'], default='satellite',
                         help='Basemap overlay (default: satellite). '
                              'Options: osm, satellite, terrain, none. Requires contextily: uv add contextily')
-    parser.add_argument('--interval', choices=['daily', 'monthly'], default='daily',
-                        help='Time interval for frame grouping (default: daily). '
-                             'Use "monthly" for multi-year periods.')
+    parser.add_argument('--interval', choices=['daily', 'monthly'], default='monthly',
+                        help='Time interval for frame grouping (default: monthly). '
+                             'Use "daily" for day-by-day viewing.')
     parser.add_argument('--dpi', type=int, default=80,
                         help='Frame resolution in DPI (default: 80). Higher = better quality but slower. Try 60 for speed, 100+ for quality.')
 
