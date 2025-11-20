@@ -25,6 +25,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib import font_manager
+from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
 import requests
 import imageio.v3 as iio
@@ -55,6 +56,25 @@ VIDEOS_DIR = Path("outputs/videos")
 # Rate limiting for API requests (now using sequential processing)
 _last_api_call_time = None
 API_CALL_DELAY = 0.3  # Minimum seconds between API calls - conservative but not too slow
+
+# Custom heatmap colormap: 10-color gradient from colleague's style reference
+# Dark blue held longer (0-20%), cream introduced sooner (90%)
+FIRE_CMAP = LinearSegmentedColormap.from_list(
+    'fire_heatmap',
+    [
+        (0.00, '#182B4C'),  # Dark blue (0-20%)
+        (0.20, '#0E2585'),  # Begin color progression at 20%
+        (0.30, '#0B239B'),
+        (0.40, '#201BA4'),
+        (0.50, '#2F1B89'),
+        (0.60, '#551771'),
+        (0.70, '#9E0E3F'),
+        (0.80, '#D71510'),
+        (0.90, '#FFCE63'),  # Yellow at 90%
+        (1.00, '#FFF7E1'),  # Cream at top
+    ],
+    N=256
+)
 
 
 def get_map_key():
@@ -385,7 +405,7 @@ def clip_fires_to_aoi(fire_df, aoi):
     return fire_gdf_all, fire_gdf_clipped
 
 
-def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basemap_style=None, interval='daily', dpi=80, overall_start=None, overall_end=None, weight_by='count', fire_gdf_all=None):
+def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basemap_style=None, interval='daily', dpi=80, overall_start=None, overall_end=None, weight_by='count', fire_gdf_all=None, cmap=None):
     """
     Generate heatmap frames at specified interval (daily or monthly).
 
@@ -402,10 +422,14 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
         overall_end (datetime): Overall end date for title (optional)
         weight_by (str): Weighting method - 'count' (frequency) or 'frp' (radiative power intensity)
         fire_gdf_all (gpd.GeoDataFrame): All fire data in bounding box (optional, for showing context)
+        cmap: Colormap to use for heatmap (default: FIRE_CMAP)
 
     Returns:
         list: Paths to generated frame files
     """
+    # Use custom colormap if not specified
+    if cmap is None:
+        cmap = FIRE_CMAP
     # Use overall dates for title if provided
     if overall_start is None:
         overall_start = start_date
@@ -604,7 +628,7 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
                 sns.kdeplot(
                     x=x, y=y,
                     weights=weights,
-                    cmap='hot', fill=True, alpha=0.4,
+                    cmap=cmap, fill=True, alpha=0.4,
                     levels=10, ax=ax, bw_adjust=0.15, zorder=2
                 )
 
@@ -956,15 +980,15 @@ Examples:
     fire_gdf_all, fire_gdf = clip_fires_to_aoi(fire_df, aoi)
     print(f"✓ Spatial processing completed in {time.time() - t2:.1f}s")
 
-    # Generate frequency-based video
+    # Generate frames with custom colormap
     print(f"\n[3/4] Rendering frames (DPI={args.dpi})...")
     t3 = time.time()
-    frames_dir_freq = Path("outputs/frames_frequency")
-    frames_dir_freq.mkdir(parents=True, exist_ok=True)
-    frame_files_freq = generate_daily_frames(fire_gdf, aoi, start_date, end_date, frames_dir_freq,
-                                             basemap_style=args.basemap, interval=args.interval,
-                                             dpi=args.dpi, overall_start=start_date, overall_end=end_date,
-                                             weight_by='count', fire_gdf_all=fire_gdf_all)
+    frames_dir = Path("outputs/frames_frequency")
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    frame_files = generate_daily_frames(fire_gdf, aoi, start_date, end_date, frames_dir,
+                                       basemap_style=args.basemap, interval=args.interval,
+                                       dpi=args.dpi, overall_start=start_date, overall_end=end_date,
+                                       weight_by='count', fire_gdf_all=fire_gdf_all, cmap=FIRE_CMAP)
     print(f"✓ Frame rendering completed in {time.time() - t3:.1f}s")
 
     # Generate output filename with format: OUTPUT_{StartDate}_{EndDate}_{AOI_name}.mp4
@@ -979,14 +1003,14 @@ Examples:
     print(f"\n[4/4] Compiling video...")
     t4 = time.time()
     output_dir.mkdir(parents=True, exist_ok=True)
-    compile_video(frame_files_freq, str(output_video), fps=args.fps)
+    compile_video(frame_files, str(output_video), fps=args.fps)
     print(f"✓ Video compilation completed in {time.time() - t4:.1f}s")
 
     # Cleanup
     if not args.keep_frames:
-        cleanup_frames(frames_dir_freq)
+        cleanup_frames(frames_dir)
     else:
-        print(f"\nFrames saved in: {frames_dir_freq}")
+        print(f"\nFrames saved in: {frames_dir}")
 
     total_time = time.time() - t0
     print(f"\n{'='*60}")
