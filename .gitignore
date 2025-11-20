@@ -9,18 +9,18 @@ env/
 venv/
 ENV/
 
-# Project specific
-api_cache/
-temp_frames/
+# Project outputs
+outputs/
 *.mp4
 *.avi
 *.mov
 
-# Input/Output directories
-outputs/
+# Cache directory
+.cache/
+
+# Input files (except example)
 inputs/*.geojson
 !inputs/example.geojson
-.cache/
 
 # IDE
 .idea/

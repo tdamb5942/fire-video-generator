@@ -4,16 +4,14 @@ Generate MP4 timelapse videos showing fire activity heatmaps within a GeoJSON-de
 
 ## Features
 
-- **Dual Output**: Generates TWO videos per run
-  - **Frequency video**: Shows where fires occur most often (detection count)
-  - **Intensity video**: Shows where fires burn hottest (Fire Radiative Power in MW)
 - Fetches fire detection data from NASA FIRMS API (MODIS Standard Processing)
-- Parallel API requests for 10-20x speed improvement
+- Sequential API requests with automatic retry logic for 100% reliability
 - Handles API's 10-day request limit with automatic chunking
-- Clips fire points to exact polygon boundaries (not just bounding box)
-- Generates smooth KDE heatmaps weighted by frequency or intensity
-- Compiles daily/monthly frames into MP4 videos
-- Includes progress bars and detailed user feedback
+- Expands AOI by 25km buffer to show fire context beyond boundaries
+- Clips fire points to exact polygon boundaries
+- Generates smooth KDE heatmaps with customizable colormaps
+- Includes satellite, terrain, or street map basemap overlays
+- Compiles monthly frames into MP4 videos with timeline bar charts
 - Optional caching for development/testing
 - Handles edge cases: no fires, sparse data, API failures
 
@@ -32,18 +30,21 @@ This project uses `uv` for dependency management. The required packages are:
 - tqdm >= 4.66.0
 - python-dotenv >= 1.0.0 (for .env file support)
 - contextily >= 1.3.0 (optional, for basemap overlays)
+- Pillow >= 10.0.0
 
 ## Project Structure
 
 ```
 fire-video-generator/
-├── inputs/              # Place your GeoJSON files here
-│   └── example.geojson  # Example test area
-├── outputs/             # Generated outputs (gitignored)
-│   ├── videos/          # MP4 timelapse videos
-│   ├── frames/          # Temporary PNG frames
-│   └── cache/           # API response cache (when --cache is used)
-├── fire_timelapse.py    # Main script
+├── src/
+│   └── fire_timelapse.py  # Main script
+├── inputs/                # Place your GeoJSON files here
+│   └── example.geojson    # Example test area
+├── outputs/               # Generated outputs (gitignored)
+│   └── videos/            # MP4 timelapse videos
+├── .cache/                # API response cache (gitignored)
+├── pyproject.toml
+├── CLAUDE.md              # Development documentation
 └── README.md
 ```
 
@@ -53,10 +54,6 @@ fire-video-generator/
 2. Install dependencies using uv:
    ```bash
    uv sync
-   ```
-3. **(Optional)** For basemap overlays, install contextily:
-   ```bash
-   uv add contextily
    ```
 
 ## NASA FIRMS API Key
@@ -96,44 +93,58 @@ Create a `config.json` file in the project directory:
 ### Basic Usage
 
 ```bash
-python fire_timelapse.py <geojson_file> <start_date> <end_date>
+python src/fire_timelapse.py <geojson_file> <start_date> <end_date>
 ```
 
 ### Examples
 
 **Generate a one-month timelapse:**
 ```bash
-python fire_timelapse.py inputs/example.geojson 2023-08-01 2023-08-31
+python src/fire_timelapse.py inputs/example.geojson 2023-08-01 2023-08-31
 ```
 
-**Custom output filename and frame rate:**
+**Custom frame rate:**
 ```bash
-python fire_timelapse.py inputs/your_area.geojson 2023-01-01 2023-12-31 -o outputs/videos/yearly_fires.mp4 --fps 5
+python src/fire_timelapse.py inputs/your_area.geojson 2023-01-01 2023-12-31 --fps 5
 ```
 
 **Development mode with caching:**
 ```bash
-python fire_timelapse.py inputs/your_area.geojson 2023-06-01 2023-06-30 --cache
+python src/fire_timelapse.py inputs/your_area.geojson 2023-06-01 2023-06-30 --cache
 ```
 
 **Keep frame files for inspection:**
 ```bash
-python fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-15 --keep-frames
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-15 --keep-frames
 ```
 
-**With satellite basemap overlay:**
+**With satellite basemap overlay (default):**
 ```bash
-python fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --basemap satellite
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31
 ```
 
 **With OpenStreetMap basemap:**
 ```bash
-python fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --basemap osm
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --basemap osm
 ```
 
 **With terrain basemap:**
 ```bash
-python fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --basemap terrain
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --basemap terrain
+```
+
+**Daily interval instead of monthly:**
+```bash
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --interval daily
+```
+
+**Adjust rendering quality:**
+```bash
+# Faster rendering (lower quality)
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --dpi 60
+
+# Higher quality (slower rendering)
+python src/fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --dpi 100
 ```
 
 ### Command-Line Arguments
@@ -144,33 +155,14 @@ python fire_timelapse.py inputs/your_area.geojson 2023-08-01 2023-08-31 --basema
 - `end_date` - End date in YYYY-MM-DD format
 
 **Optional Arguments:**
-- `-o, --output` - Base output filename (default: `outputs/videos/OUTPUT_{input_filename}.mp4`)
-  - Script will append `_frequency` and `_intensity` to create two videos
-  - Example: `--output my_video.mp4` → `my_video_frequency.mp4` and `my_video_intensity.mp4`
+- `-o, --output` - Output filename (default: `outputs/videos/OUTPUT_{start}_{end}_{aoi_name}.mp4`)
 - `--fps` - Frames per second for video (default: 3)
-- `--cache` - Cache API responses in `outputs/cache/` (useful for development/testing)
-- `--keep-frames` - Keep temporary PNG frames in `outputs/frames/` after video generation
-- `--basemap` - Add basemap overlay: `osm` (OpenStreetMap), `satellite` (Esri WorldImagery), or `terrain` (Stamen Terrain)
-  - Requires contextily: `uv add contextily`
+- `--cache` - Cache API responses in `.cache/` (useful for development/testing)
+- `--keep-frames` - Keep temporary PNG frames after video generation
+- `--basemap` - Add basemap overlay: `osm`, `satellite` (default), `terrain`, or `none`
+- `--interval` - Time interval: `monthly` (default) or `daily`
+- `--dpi` - Frame resolution (default: 80, try 60 for speed or 100+ for quality)
 - `-h, --help` - Show help message
-
-## Understanding Frequency vs Intensity
-
-Each run generates **two complementary visualizations** to provide different insights:
-
-### Frequency Video (Detection Count)
-- **What it shows**: WHERE fires happen most often
-- **Use case**: Identify areas with persistent fire activity
-- **Metric**: Number of fire detections
-- **Example insight**: "This area had 500 fire detections - lots of small agricultural burns"
-
-### Intensity Video (Fire Radiative Power)
-- **What it shows**: WHERE fires burn most intensely
-- **Use case**: Identify areas with severe fire events
-- **Metric**: Total Fire Radiative Power in megawatts (MW)
-- **Example insight**: "This area had 15,000 MW - a few massive wildfires"
-
-**Why both matter**: An area with many small fires (high frequency, low intensity) tells a different story than an area with one massive wildfire (low frequency, high intensity). Both videos together provide complete fire behavior analysis.
 
 ## GeoJSON Format
 
@@ -205,32 +197,49 @@ Example:
 
 ## How It Works
 
-1. **Load AOI**: Reads GeoJSON file and extracts bounding box
-2. **Fetch Data**: Queries NASA FIRMS API in parallel (10-day chunks, up to 20 concurrent requests)
-3. **Clip to Polygon**: Filters fire points to exact AOI boundaries
-4. **Generate Frames (Frequency)**: Creates daily/monthly heatmap visualizations showing fire frequency
-   - Uses Kernel Density Estimation (KDE) for 3+ points (uniform weighting)
+1. **Load AOI**: Reads GeoJSON file and buffers by 25km to fetch surrounding fire data
+2. **Fetch Data**: Queries NASA FIRMS API sequentially in 10-day chunks (yearly batches)
+3. **Spatial Processing**: Converts fire detections to points and prepares both buffered and clipped datasets
+4. **Generate Frames**: Creates monthly/daily heatmap visualizations
+   - Uses all fires in buffered area for visualization (shows context)
+   - Uses Kernel Density Estimation (KDE) for 3+ points with gnuplot2 colormap
    - Falls back to scatter plots for sparse data
-   - Overlays on basemap tiles (satellite, street map, or terrain)
-5. **Compile Frequency Video**: Combines frames into MP4 using H.264 codec
-6. **Generate Frames (Intensity)**: Creates daily/monthly heatmap visualizations showing fire intensity
-   - KDE weighted by Fire Radiative Power (FRP) values
-   - Point sizes scaled by FRP for visual emphasis
-   - Shows total MW instead of detection counts
-7. **Compile Intensity Video**: Combines FRP-weighted frames into second MP4
-8. **Cleanup**: Removes temporary files (unless `--keep-frames` is used)
+   - Overlays on basemap tiles (satellite by default)
+   - Includes timeline bar chart for monthly intervals
+5. **Compile Video**: Combines frames into MP4 using H.264 codec
+6. **Cleanup**: Removes temporary files (unless `--keep-frames` is used)
 
 ## Basemap Options
 
 To add geographic context to your visualizations, you can overlay fire data on actual maps using the `--basemap` option:
 
-- **`--basemap osm`**: OpenStreetMap street map (good for seeing roads, cities, boundaries)
-- **`--basemap satellite`**: Esri WorldImagery satellite imagery (best for visualizing natural areas)
-- **`--basemap terrain`**: Stamen Terrain map (shows topography and elevation)
+- **`--basemap satellite`** (default): Esri WorldImagery satellite imagery
+- **`--basemap osm`**: OpenStreetMap street map (roads, cities, boundaries)
+- **`--basemap terrain`**: Stamen Terrain map (topography and elevation)
+- **`--basemap none`**: No basemap, just fire data and AOI boundary
 
-**Requirements**: Install contextily with `uv add contextily`
+Basemap tiles are downloaded in real-time and cached by contextily for subsequent frames.
 
-**Note**: Basemap tiles are downloaded in real-time, so the first render may take longer due to network requests. The tiles are cached by contextily for subsequent frames in the same area.
+## Visualization Details
+
+### 25km Buffer Zone
+The script fetches fire data for 25km beyond your AOI boundaries. This shows fire activity in the surrounding area, providing important context for understanding fire patterns relative to your AOI.
+
+### Colormap
+Uses the 'gnuplot2' colormap by default:
+- Dark purple/black (low fire density)
+- Blue → Cyan → Green
+- Yellow → Orange → Red
+- Pink/White (high fire density)
+
+Each frame normalizes independently, so colors show relative density within that time period.
+
+### Monthly Bar Chart
+Monthly interval mode includes a timeline bar chart showing:
+- Fire detection counts for each month
+- Current month highlighted in red
+- Other months in gray
+- Helps visualize temporal patterns
 
 ## Important Notes
 
@@ -240,16 +249,39 @@ To add geographic context to your visualizations, you can overlay fire data on a
 - For near-real-time data, NASA offers other sources (VIIRS, MODIS NRT)
 - This tool uses MODIS_SP for science-grade processed data
 
-### API Limits
+### API Processing
+- **Sequential processing** with 0.3s delays between requests
+- Automatic retry logic with exponential backoff
+- Processes in yearly batches to prevent data loss
 - Maximum 10 days per request (automatically handled)
-- 5000 transactions per 10-minute window
-- Script includes 0.5-second delays between requests
 
 ### Performance
-- Large areas or long date ranges will take time
+- Small AOI + 1 month ≈ 30-60 seconds
+- Large AOI + 1 year ≈ several minutes (mostly API fetching)
 - Use `--cache` during development to avoid re-fetching data
-- Cache files are stored in `outputs/cache/` directory
-- All outputs (videos, frames, cache) are stored in the `outputs/` directory and gitignored
+- Lower `--dpi` for faster rendering, higher for better quality
+
+## Output
+
+The script generates one MP4 video per run:
+
+**Filename format**: `OUTPUT_{start_date}_{end_date}_{aoi_name}.mp4`
+
+Example: `OUTPUT_2023-08-01_2023-08-31_example.mp4`
+
+### Video Frame Contents
+
+Each video frame includes:
+- Fire activity heatmap (KDE with gnuplot2 colormap)
+- AOI boundary outline (white line)
+- Basemap overlay (satellite imagery by default)
+- Month/year label
+- Detection count for that period
+- Timeline bar chart (for monthly intervals)
+
+### Additional Outputs
+- Optional: Individual PNG frames in `outputs/frames_frequency/` (if `--keep-frames` is used)
+- Optional: Cached API responses in `.cache/` (if `--cache` is used)
 
 ## Troubleshooting
 
@@ -259,18 +291,22 @@ To add geographic context to your visualizations, you can overlay fire data on a
 - Try a broader date range or different area
 
 **"MAP_KEY not configured"**
-- Set the FIRMS_MAP_KEY environment variable
-- Or create a config.json file with your key
+- Create a `.env` file with your FIRMS_MAP_KEY
+- Or set the environment variable
 - Get your key at https://firms.modaps.eosdis.nasa.gov/api/map_key/
 
 **"API request failed"**
 - Check your internet connection
 - Verify your MAP_KEY is valid (32 characters)
-- You may have hit the rate limit (wait a few minutes)
+- You may have hit the rate limit (script will retry automatically)
+
+**"Basemap requested but contextily is not installed"**
+- Install with: `uv add contextily`
+- Or run with `--basemap none`
 
 **Video quality issues**
-- Adjust `--fps` parameter (higher = smoother, longer duration)
-- Check the generated frames in `outputs/frames/` with `--keep-frames`
+- Adjust `--dpi` parameter (default 80, try 60-120)
+- Check generated frames with `--keep-frames`
 - Ensure sufficient fire points exist for heatmap generation
 
 ## Examples of Use Cases
@@ -279,44 +315,18 @@ To add geographic context to your visualizations, you can overlay fire data on a
 - **Climate Research**: Analyze historical fire patterns
 - **Environmental Studies**: Study fire activity in specific ecosystems
 - **Risk Assessment**: Visualize fire frequency in vulnerable areas
+- **Agricultural Monitoring**: Track controlled burns and crop residue burning
 
-## Output
+## Development
 
-The script generates **TWO videos** per run:
+For development and testing:
 
-1. **Frequency-based video** (`*_frequency.mp4`):
-   - Heatmap shows fire detection frequency (where fires happen most often)
-   - Info box displays detection counts
-   - Bar chart shows number of detections per month
+1. Use `--cache` to avoid repeated API calls
+2. Use `--keep-frames` to inspect individual frames
+3. Test with small date ranges first (1 week to 1 month)
+4. Use lower `--dpi` (e.g., 60) for faster iteration
 
-2. **Intensity-based video** (`*_intensity.mp4`):
-   - Heatmap weighted by Fire Radiative Power (FRP) - shows where fires burn hottest
-   - Larger/brighter areas = higher radiative power output
-   - Info box displays total FRP in megawatts (MW)
-   - Bar chart shows total FRP per month
-
-### Example Output Files
-
-Input: `inputs/Mangabe_Buffer_50km.geojson`
-
-Outputs:
-- `outputs/videos/OUTPUT_Mangabe_Buffer_50km_frequency.mp4` (frequency-based)
-- `outputs/videos/OUTPUT_Mangabe_Buffer_50km_intensity.mp4` (intensity-based)
-
-### Additional Outputs
-- Optional: Individual PNG frames in `outputs/frames_frequency/` and `outputs/frames_intensity/` (if `--keep-frames` is used)
-- Optional: Cached API responses in `outputs/cache/` (if `--cache` is used)
-- Console output with statistics and progress
-
-### Video Frame Contents
-
-Each video frame includes:
-- Fire activity heatmap (weighted by frequency or FRP)
-- AOI boundary outline
-- Date label showing full date range
-- Month/year and metric value (detections or MW)
-- Timeline bar chart (for monthly intervals)
-- Optional: Basemap overlay (satellite imagery, street map, or terrain)
+Cache files are stored in `.cache/` and are automatically used on subsequent runs with the same parameters.
 
 ## License
 

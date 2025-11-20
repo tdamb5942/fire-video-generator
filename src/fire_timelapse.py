@@ -49,7 +49,7 @@ except ImportError:
 # Configuration
 API_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 SOURCE = "MODIS_SP"
-CACHE_DIR = Path("outputs/cache")
+CACHE_DIR = Path(".cache")
 FRAMES_DIR = Path("outputs/frames")
 VIDEOS_DIR = Path("outputs/videos")
 
@@ -988,7 +988,7 @@ Examples:
     frame_files = generate_daily_frames(fire_gdf, aoi, start_date, end_date, frames_dir,
                                        basemap_style=args.basemap, interval=args.interval,
                                        dpi=args.dpi, overall_start=start_date, overall_end=end_date,
-                                       weight_by='count', fire_gdf_all=fire_gdf_all, cmap=FIRE_CMAP)
+                                       weight_by='count', fire_gdf_all=fire_gdf_all, cmap='gnuplot2')
     print(f"✓ Frame rendering completed in {time.time() - t3:.1f}s")
 
     # Generate output filename with format: OUTPUT_{StartDate}_{EndDate}_{AOI_name}.mp4
