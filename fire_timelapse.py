@@ -134,13 +134,13 @@ def load_aoi(geojson_path):
         sys.exit(1)
 
 
-def get_bounding_box(aoi, buffer_km=40):
+def get_bounding_box(aoi, buffer_km=25):
     """
     Extract bounding box from GeoDataFrame with buffer.
 
     Args:
         aoi (gpd.GeoDataFrame): Area of interest
-        buffer_km (float): Buffer distance in kilometers (default: 40km)
+        buffer_km (float): Buffer distance in kilometers (default: 25km)
 
     Returns:
         str: Bounding box as 'west,south,east,north'
@@ -439,14 +439,14 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
         fire_gdf_all_plot = fire_gdf_all
 
     # Get expanded bounds for viewport (buffer the AOI for rendering context)
-    # Use the same 40km buffer to match the API fetch area
+    # Use the same 25km buffer to match the API fetch area
     if use_basemap:
         # Buffer in projected coordinates (meters)
-        aoi_buffered_for_plot = aoi_plot.buffer(40000)  # 40km in meters
+        aoi_buffered_for_plot = aoi_plot.buffer(25000)  # 25km in meters
         bounds = aoi_buffered_for_plot.total_bounds
     else:
-        # Buffer in WGS84 (approximate degrees - ~0.36 degrees ≈ 40km at equator)
-        aoi_buffered_for_plot = aoi_plot.buffer(0.36)
+        # Buffer in WGS84 (approximate degrees - ~0.225 degrees ≈ 25km at equator)
+        aoi_buffered_for_plot = aoi_plot.buffer(0.225)
         bounds = aoi_buffered_for_plot.total_bounds
 
     # Convert acq_date to datetime
@@ -581,23 +581,20 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
         # Plot AOI boundary (lighter color for dark mode, high z-order to show on top)
         aoi_plot.boundary.plot(ax=ax, color='#e0e0e0', linewidth=2.5, zorder=10)
 
-        # Plot fires - first all fires (context), then AOI fires (highlight)
-        # Plot all fires in muted gray (fires outside AOI for context)
-        if period_fires_all is not None and len(period_fires_all) > 0:
-            # Plot all fires with muted styling
-            period_fires_all.plot(ax=ax, color='#666666', markersize=8, alpha=0.3, zorder=1)
+        # Plot fires - use all fires in bounding box with same color scheme
+        # Use period_fires_all if available, otherwise fall back to period_fires
+        fires_to_plot = period_fires_all if period_fires_all is not None and len(period_fires_all) > 0 else period_fires
 
-        # Plot AOI fires with prominent styling
-        if len(period_fires) >= 3:
+        if len(fires_to_plot) >= 3:
             # Use KDE heatmap for sufficient points
             try:
                 # Extract coordinates
-                x = period_fires.geometry.x.values
-                y = period_fires.geometry.y.values
+                x = fires_to_plot.geometry.x.values
+                y = fires_to_plot.geometry.y.values
 
                 # Get weights if using FRP
-                if weight_by == 'frp' and 'frp' in period_fires.columns:
-                    weights = period_fires['frp'].values
+                if weight_by == 'frp' and 'frp' in fires_to_plot.columns:
+                    weights = fires_to_plot['frp'].values
                     # Normalize weights to avoid extreme values
                     weights = weights / weights.max() if weights.max() > 0 else weights
                 else:
@@ -612,9 +609,9 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
                 )
 
                 # Add scatter points (size by FRP if applicable)
-                if weight_by == 'frp' and 'frp' in period_fires.columns:
+                if weight_by == 'frp' and 'frp' in fires_to_plot.columns:
                     # Scale point sizes by FRP (normalize for visibility)
-                    frp_vals = period_fires['frp'].values
+                    frp_vals = fires_to_plot['frp'].values
                     sizes = 5 + (frp_vals / frp_vals.max() * 45) if frp_vals.max() > 0 else 15
                     ax.scatter(x, y, c='red', s=sizes, alpha=0.6, edgecolors='none', zorder=3)
                 else:
@@ -622,21 +619,21 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
 
             except Exception as e:
                 # Fallback to scatter if KDE fails
-                if weight_by == 'frp' and 'frp' in period_fires.columns:
-                    frp_vals = period_fires['frp'].values
+                if weight_by == 'frp' and 'frp' in fires_to_plot.columns:
+                    frp_vals = fires_to_plot['frp'].values
                     sizes = 10 + (frp_vals / frp_vals.max() * 90) if frp_vals.max() > 0 else 20
-                    period_fires.plot(ax=ax, color='red', markersize=sizes, alpha=0.6, zorder=3)
+                    fires_to_plot.plot(ax=ax, color='red', markersize=sizes, alpha=0.6, zorder=3)
                 else:
-                    period_fires.plot(ax=ax, color='red', markersize=20, alpha=0.6, zorder=3)
+                    fires_to_plot.plot(ax=ax, color='red', markersize=20, alpha=0.6, zorder=3)
 
-        elif len(period_fires) > 0:
+        elif len(fires_to_plot) > 0:
             # Scatter plot for sparse data
-            if weight_by == 'frp' and 'frp' in period_fires.columns:
-                frp_vals = period_fires['frp'].values
+            if weight_by == 'frp' and 'frp' in fires_to_plot.columns:
+                frp_vals = fires_to_plot['frp'].values
                 sizes = 20 + (frp_vals / frp_vals.max() * 130) if frp_vals.max() > 0 else 50
-                period_fires.plot(ax=ax, color='red', markersize=sizes, alpha=0.6, zorder=3)
+                fires_to_plot.plot(ax=ax, color='red', markersize=sizes, alpha=0.6, zorder=3)
             else:
-                period_fires.plot(ax=ax, color='red', markersize=50, alpha=0.6, zorder=3)
+                fires_to_plot.plot(ax=ax, color='red', markersize=50, alpha=0.6, zorder=3)
 
         # Set axis labels and styling
         if use_basemap:
@@ -944,8 +941,8 @@ Examples:
     print(f"Loading AOI from: {args.geojson}")
     t0 = time.time()
     aoi = load_aoi(args.geojson)
-    bbox = get_bounding_box(aoi, buffer_km=40)
-    print(f"Bounding box (with 40km buffer): {bbox}")
+    bbox = get_bounding_box(aoi, buffer_km=25)
+    print(f"Bounding box (with 25km buffer): {bbox}")
 
     # Fetch fire data
     print(f"\n[1/4] Fetching fire data...")
