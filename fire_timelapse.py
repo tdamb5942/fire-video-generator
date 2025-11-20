@@ -134,17 +134,33 @@ def load_aoi(geojson_path):
         sys.exit(1)
 
 
-def get_bounding_box(aoi):
+def get_bounding_box(aoi, buffer_km=40):
     """
-    Extract bounding box from GeoDataFrame.
+    Extract bounding box from GeoDataFrame with buffer.
 
     Args:
         aoi (gpd.GeoDataFrame): Area of interest
+        buffer_km (float): Buffer distance in kilometers (default: 40km)
 
     Returns:
         str: Bounding box as 'west,south,east,north'
     """
-    bounds = aoi.total_bounds  # [minx, miny, maxx, maxy]
+    # Get the centroid of the AOI for creating a custom projection
+    aoi_centroid = aoi.unary_union.centroid
+    lon, lat = aoi_centroid.x, aoi_centroid.y
+
+    # Create a custom Azimuthal Equidistant projection centered on the AOI
+    # This preserves distances accurately from the center point
+    custom_crs = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +x_0=0 +y_0=0 +datum=WGS84 +units=m"
+
+    # Project to custom CRS, buffer in meters, then project back to WGS84
+    aoi_projected = aoi.to_crs(custom_crs)
+    aoi_buffered = aoi_projected.buffer(buffer_km * 1000)  # Convert km to meters
+    aoi_buffered_gdf = gpd.GeoDataFrame(geometry=aoi_buffered, crs=custom_crs)
+    aoi_buffered_wgs84 = aoi_buffered_gdf.to_crs("EPSG:4326")
+
+    # Get bounding box of buffered AOI
+    bounds = aoi_buffered_wgs84.total_bounds  # [minx, miny, maxx, maxy]
     return f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}"
 
 
@@ -350,31 +366,31 @@ def clip_fires_to_aoi(fire_df, aoi):
         aoi (gpd.GeoDataFrame): Area of interest polygon
 
     Returns:
-        gpd.GeoDataFrame: Fire points within AOI
+        tuple: (fire_gdf_all, fire_gdf_clipped) - all fires in bbox and fires within AOI
     """
     if fire_df.empty:
-        return gpd.GeoDataFrame()
+        return gpd.GeoDataFrame(), gpd.GeoDataFrame()
 
     print("\nClipping fire points to AOI polygon...")
 
     # Convert fire data to GeoDataFrame
     geometry = [Point(lon, lat) for lon, lat in zip(fire_df['longitude'], fire_df['latitude'])]
-    fire_gdf = gpd.GeoDataFrame(fire_df, geometry=geometry, crs="EPSG:4326")
+    fire_gdf_all = gpd.GeoDataFrame(fire_df, geometry=geometry, crs="EPSG:4326")
 
     # Clip to AOI
-    clipped = gpd.clip(fire_gdf, aoi)
+    fire_gdf_clipped = gpd.clip(fire_gdf_all, aoi)
 
-    print(f"Fire points within AOI: {len(clipped)} (from {len(fire_df)} total)")
+    print(f"Fire points within AOI: {len(fire_gdf_clipped)} (from {len(fire_gdf_all)} total)")
 
-    return clipped
+    return fire_gdf_all, fire_gdf_clipped
 
 
-def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basemap_style=None, interval='daily', dpi=80, overall_start=None, overall_end=None, weight_by='count'):
+def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basemap_style=None, interval='daily', dpi=80, overall_start=None, overall_end=None, weight_by='count', fire_gdf_all=None):
     """
     Generate heatmap frames at specified interval (daily or monthly).
 
     Args:
-        fire_gdf (gpd.GeoDataFrame): Clipped fire data
+        fire_gdf (gpd.GeoDataFrame): Clipped fire data (within AOI)
         aoi (gpd.GeoDataFrame): Area of interest
         start_date (datetime): Start date
         end_date (datetime): End date
@@ -385,6 +401,7 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
         overall_start (datetime): Overall start date for title (optional)
         overall_end (datetime): Overall end date for title (optional)
         weight_by (str): Weighting method - 'count' (frequency) or 'frp' (radiative power intensity)
+        fire_gdf_all (gpd.GeoDataFrame): All fire data in bounding box (optional, for showing context)
 
     Returns:
         list: Paths to generated frame files
@@ -411,16 +428,32 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             fire_gdf_plot = fire_gdf.to_crs(epsg=3857)
         else:
             fire_gdf_plot = fire_gdf
+        # Also reproject all fires if provided
+        if fire_gdf_all is not None and not fire_gdf_all.empty:
+            fire_gdf_all_plot = fire_gdf_all.to_crs(epsg=3857)
+        else:
+            fire_gdf_all_plot = fire_gdf_all if fire_gdf_all is not None else None
     else:
         aoi_plot = aoi
         fire_gdf_plot = fire_gdf
+        fire_gdf_all_plot = fire_gdf_all
 
-    # Get AOI bounds for consistent plotting
-    bounds = aoi_plot.total_bounds
+    # Get expanded bounds for viewport (buffer the AOI for rendering context)
+    # Use the same 40km buffer to match the API fetch area
+    if use_basemap:
+        # Buffer in projected coordinates (meters)
+        aoi_buffered_for_plot = aoi_plot.buffer(40000)  # 40km in meters
+        bounds = aoi_buffered_for_plot.total_bounds
+    else:
+        # Buffer in WGS84 (approximate degrees - ~0.36 degrees ≈ 40km at equator)
+        aoi_buffered_for_plot = aoi_plot.buffer(0.36)
+        bounds = aoi_buffered_for_plot.total_bounds
 
     # Convert acq_date to datetime
     if not fire_gdf_plot.empty:
         fire_gdf_plot['acq_date'] = pd.to_datetime(fire_gdf_plot['acq_date'])
+    if fire_gdf_all_plot is not None and not fire_gdf_all_plot.empty:
+        fire_gdf_all_plot['acq_date'] = pd.to_datetime(fire_gdf_all_plot['acq_date'])
 
     # Generate date periods based on interval
     periods = []
@@ -468,7 +501,7 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             monthly_counts[label] = 0
 
     for period_start, period_end, label in tqdm(periods, desc="Rendering frames"):
-        # Filter fires for this period
+        # Filter fires for this period (AOI fires)
         if not fire_gdf_plot.empty:
             if interval == 'monthly':
                 # Get all fires within the month
@@ -480,6 +513,18 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
                 period_fires = fire_gdf_plot[fire_gdf_plot['acq_date'] == period_start]
         else:
             period_fires = gpd.GeoDataFrame()
+
+        # Filter all fires for this period (including outside AOI)
+        if fire_gdf_all_plot is not None and not fire_gdf_all_plot.empty:
+            if interval == 'monthly':
+                period_fires_all = fire_gdf_all_plot[
+                    (fire_gdf_all_plot['acq_date'] >= period_start) &
+                    (fire_gdf_all_plot['acq_date'] <= period_end)
+                ]
+            else:  # daily
+                period_fires_all = fire_gdf_all_plot[fire_gdf_all_plot['acq_date'] == period_start]
+        else:
+            period_fires_all = None
 
         # Create figure with subplots (map on top, bar chart on bottom for monthly interval)
         if interval == 'monthly':
@@ -510,12 +555,18 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
         else:
             fig, ax = plt.subplots(figsize=(12, 10))
 
+        # CRITICAL: Set axis limits BEFORE adding basemap so it knows what area to fetch
+        # Add 8% padding on each side to prevent boundary touching video edges
+        x_range = bounds[2] - bounds[0]
+        y_range = bounds[3] - bounds[1]
+        padding_x = x_range * 0.08
+        padding_y = y_range * 0.08
+        ax.set_xlim(bounds[0] - padding_x, bounds[2] + padding_x)
+        ax.set_ylim(bounds[1] - padding_y, bounds[3] + padding_y)
+
         # Add basemap if requested
         if use_basemap:
-            # Plot AOI first to set extent (lighter color for dark mode)
-            aoi_plot.boundary.plot(ax=ax, color='#e0e0e0', linewidth=2.5, zorder=2)
-
-            # Add basemap tiles
+            # Add basemap tiles (axis limits already set above)
             try:
                 if basemap_style == 'satellite':
                     cx.add_basemap(ax, source=cx.providers.Esri.WorldImagery, attribution_size=6)
@@ -526,11 +577,17 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             except Exception as e:
                 print(f"\nWarning: Failed to add basemap: {e}")
                 print("Continuing without basemap for this frame...")
-        else:
-            # Plot AOI boundary without basemap (lighter color for dark mode)
-            aoi_plot.boundary.plot(ax=ax, color='#e0e0e0', linewidth=2.5)
 
-        # Plot fires
+        # Plot AOI boundary (lighter color for dark mode, high z-order to show on top)
+        aoi_plot.boundary.plot(ax=ax, color='#e0e0e0', linewidth=2.5, zorder=10)
+
+        # Plot fires - first all fires (context), then AOI fires (highlight)
+        # Plot all fires in muted gray (fires outside AOI for context)
+        if period_fires_all is not None and len(period_fires_all) > 0:
+            # Plot all fires with muted styling
+            period_fires_all.plot(ax=ax, color='#666666', markersize=8, alpha=0.3, zorder=1)
+
+        # Plot AOI fires with prominent styling
         if len(period_fires) >= 3:
             # Use KDE heatmap for sufficient points
             try:
@@ -551,7 +608,7 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
                     x=x, y=y,
                     weights=weights,
                     cmap='hot', fill=True, alpha=0.4,
-                    levels=10, ax=ax, bw_adjust=0.15
+                    levels=10, ax=ax, bw_adjust=0.15, zorder=2
                 )
 
                 # Add scatter points (size by FRP if applicable)
@@ -559,37 +616,29 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
                     # Scale point sizes by FRP (normalize for visibility)
                     frp_vals = period_fires['frp'].values
                     sizes = 5 + (frp_vals / frp_vals.max() * 45) if frp_vals.max() > 0 else 15
-                    ax.scatter(x, y, c='red', s=sizes, alpha=0.6, edgecolors='none')
+                    ax.scatter(x, y, c='red', s=sizes, alpha=0.6, edgecolors='none', zorder=3)
                 else:
-                    ax.scatter(x, y, c='red', s=15, alpha=0.6, edgecolors='none')
+                    ax.scatter(x, y, c='red', s=15, alpha=0.6, edgecolors='none', zorder=3)
 
             except Exception as e:
                 # Fallback to scatter if KDE fails
                 if weight_by == 'frp' and 'frp' in period_fires.columns:
                     frp_vals = period_fires['frp'].values
                     sizes = 10 + (frp_vals / frp_vals.max() * 90) if frp_vals.max() > 0 else 20
-                    period_fires.plot(ax=ax, color='red', markersize=sizes, alpha=0.6)
+                    period_fires.plot(ax=ax, color='red', markersize=sizes, alpha=0.6, zorder=3)
                 else:
-                    period_fires.plot(ax=ax, color='red', markersize=20, alpha=0.6)
+                    period_fires.plot(ax=ax, color='red', markersize=20, alpha=0.6, zorder=3)
 
         elif len(period_fires) > 0:
             # Scatter plot for sparse data
             if weight_by == 'frp' and 'frp' in period_fires.columns:
                 frp_vals = period_fires['frp'].values
                 sizes = 20 + (frp_vals / frp_vals.max() * 130) if frp_vals.max() > 0 else 50
-                period_fires.plot(ax=ax, color='red', markersize=sizes, alpha=0.6)
+                period_fires.plot(ax=ax, color='red', markersize=sizes, alpha=0.6, zorder=3)
             else:
-                period_fires.plot(ax=ax, color='red', markersize=50, alpha=0.6)
+                period_fires.plot(ax=ax, color='red', markersize=50, alpha=0.6, zorder=3)
 
-        # Set bounds and labels with padding to zoom out slightly
-        # Add 8% padding on each side to prevent boundary touching video edges
-        x_range = bounds[2] - bounds[0]
-        y_range = bounds[3] - bounds[1]
-        padding_x = x_range * 0.08
-        padding_y = y_range * 0.08
-        ax.set_xlim(bounds[0] - padding_x, bounds[2] + padding_x)
-        ax.set_ylim(bounds[1] - padding_y, bounds[3] + padding_y)
-
+        # Set axis labels and styling
         if use_basemap:
             # Remove axis labels for cleaner map view
             ax.set_xlabel('')
@@ -895,8 +944,8 @@ Examples:
     print(f"Loading AOI from: {args.geojson}")
     t0 = time.time()
     aoi = load_aoi(args.geojson)
-    bbox = get_bounding_box(aoi)
-    print(f"Bounding box: {bbox}")
+    bbox = get_bounding_box(aoi, buffer_km=40)
+    print(f"Bounding box (with 40km buffer): {bbox}")
 
     # Fetch fire data
     print(f"\n[1/4] Fetching fire data...")
@@ -907,7 +956,7 @@ Examples:
     # Clip to AOI
     print(f"\n[2/4] Processing spatial data...")
     t2 = time.time()
-    fire_gdf = clip_fires_to_aoi(fire_df, aoi)
+    fire_gdf_all, fire_gdf = clip_fires_to_aoi(fire_df, aoi)
     print(f"✓ Spatial processing completed in {time.time() - t2:.1f}s")
 
     # Generate frequency-based video
@@ -918,22 +967,22 @@ Examples:
     frame_files_freq = generate_daily_frames(fire_gdf, aoi, start_date, end_date, frames_dir_freq,
                                              basemap_style=args.basemap, interval=args.interval,
                                              dpi=args.dpi, overall_start=start_date, overall_end=end_date,
-                                             weight_by='count')
+                                             weight_by='count', fire_gdf_all=fire_gdf_all)
     print(f"✓ Frame rendering completed in {time.time() - t3:.1f}s")
 
-    # Generate output filename with format: OUTPUT_FREQUENCY_{StartDate}_{EndDate}_{AOI_name}.mp4
+    # Generate output filename with format: OUTPUT_{StartDate}_{EndDate}_{AOI_name}.mp4
     input_filename = Path(args.geojson).stem
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
 
     output_path = Path(args.output)
     output_dir = output_path.parent
-    output_freq = output_dir / f"OUTPUT_FREQUENCY_{start_str}_{end_str}_{input_filename}.mp4"
+    output_video = output_dir / f"OUTPUT_{start_str}_{end_str}_{input_filename}.mp4"
 
     print(f"\n[4/4] Compiling video...")
     t4 = time.time()
     output_dir.mkdir(parents=True, exist_ok=True)
-    compile_video(frame_files_freq, str(output_freq), fps=args.fps)
+    compile_video(frame_files_freq, str(output_video), fps=args.fps)
     print(f"✓ Video compilation completed in {time.time() - t4:.1f}s")
 
     # Cleanup
@@ -946,7 +995,7 @@ Examples:
     print(f"\n{'='*60}")
     print(f"✓ Total processing time: {total_time:.1f}s ({total_time/60:.1f} minutes)")
     print(f"{'='*60}")
-    print(f"\nVideo saved to: {output_freq}")
+    print(f"\nVideo saved to: {output_video}")
     print("Done!")
 
 
