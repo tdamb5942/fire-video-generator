@@ -601,26 +601,6 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             ax.set_ylabel('Latitude', fontsize=12, color='#e0e0e0')
             ax.tick_params(colors='#e0e0e0')
 
-        # Set title with creative styling (dark mode)
-        # Dynamic title showing full date range and unit
-        if interval == 'monthly':
-            start_label = overall_start.strftime("%b '%y")
-            end_label = overall_end.strftime("%b '%y")
-            # Include the unit being measured in the title
-            if weight_by == 'frp':
-                unit_label = 'Fire Radiative Power (MW)'
-            else:
-                unit_label = 'Fire Detections'
-            title_text = f'{unit_label}  •  {start_label}-{end_label}'
-        else:
-            if weight_by == 'frp':
-                title_text = f'Fire Radiative Power (MW)  •  {label}'
-            else:
-                title_text = f'Fire Detections  •  {label}'
-        ax.set_title(title_text, fontsize=19, fontweight='bold',
-                    pad=25, color='#e0e0e0',
-                    bbox=dict(boxstyle='round,pad=0.4', facecolor='#3d3d3d',
-                             edgecolor='#e74c3c', linewidth=2.5, alpha=0.95))
 
         # Add statistics text with modern styling (fixed layout to prevent jumping)
         if interval == 'monthly':
@@ -930,8 +910,8 @@ Examples:
     fire_gdf = clip_fires_to_aoi(fire_df, aoi)
     print(f"✓ Spatial processing completed in {time.time() - t2:.1f}s")
 
-    # Generate TWO videos: frequency-based and intensity-based
-    print(f"\n[3/6] Rendering FREQUENCY frames (DPI={args.dpi})...")
+    # Generate frequency-based video
+    print(f"\n[3/4] Rendering frames (DPI={args.dpi})...")
     t3 = time.time()
     frames_dir_freq = Path("outputs/frames_frequency")
     frames_dir_freq.mkdir(parents=True, exist_ok=True)
@@ -939,9 +919,9 @@ Examples:
                                              basemap_style=args.basemap, interval=args.interval,
                                              dpi=args.dpi, overall_start=start_date, overall_end=end_date,
                                              weight_by='count')
-    print(f"✓ Frequency frame rendering completed in {time.time() - t3:.1f}s")
+    print(f"✓ Frame rendering completed in {time.time() - t3:.1f}s")
 
-    # Generate output filenames with format: OUTPUT_{FREQUENCY/INTENSITY}_{StartDate}_{EndDate}_{AOI_name}.mp4
+    # Generate output filename with format: OUTPUT_FREQUENCY_{StartDate}_{EndDate}_{AOI_name}.mp4
     input_filename = Path(args.geojson).stem
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
@@ -950,47 +930,23 @@ Examples:
     output_dir = output_path.parent
     output_freq = output_dir / f"OUTPUT_FREQUENCY_{start_str}_{end_str}_{input_filename}.mp4"
 
-    print(f"\n[4/6] Compiling FREQUENCY video...")
+    print(f"\n[4/4] Compiling video...")
     t4 = time.time()
     output_dir.mkdir(parents=True, exist_ok=True)
     compile_video(frame_files_freq, str(output_freq), fps=args.fps)
-    print(f"✓ Frequency video compilation completed in {time.time() - t4:.1f}s")
-
-    # Generate INTENSITY frames
-    print(f"\n[5/6] Rendering INTENSITY frames (DPI={args.dpi})...")
-    t5 = time.time()
-    frames_dir_intens = Path("outputs/frames_intensity")
-    frames_dir_intens.mkdir(parents=True, exist_ok=True)
-    frame_files_intens = generate_daily_frames(fire_gdf, aoi, start_date, end_date, frames_dir_intens,
-                                               basemap_style=args.basemap, interval=args.interval,
-                                               dpi=args.dpi, overall_start=start_date, overall_end=end_date,
-                                               weight_by='frp')
-    print(f"✓ Intensity frame rendering completed in {time.time() - t5:.1f}s")
-
-    # Generate output filename for intensity video
-    output_intens = output_dir / f"OUTPUT_INTENSITY_{start_str}_{end_str}_{input_filename}.mp4"
-
-    print(f"\n[6/6] Compiling INTENSITY video...")
-    t6 = time.time()
-    compile_video(frame_files_intens, str(output_intens), fps=args.fps)
-    print(f"✓ Intensity video compilation completed in {time.time() - t6:.1f}s")
+    print(f"✓ Video compilation completed in {time.time() - t4:.1f}s")
 
     # Cleanup
     if not args.keep_frames:
         cleanup_frames(frames_dir_freq)
-        cleanup_frames(frames_dir_intens)
     else:
-        print(f"\nFrames saved in:")
-        print(f"  - {frames_dir_freq}")
-        print(f"  - {frames_dir_intens}")
+        print(f"\nFrames saved in: {frames_dir_freq}")
 
     total_time = time.time() - t0
     print(f"\n{'='*60}")
     print(f"✓ Total processing time: {total_time:.1f}s ({total_time/60:.1f} minutes)")
     print(f"{'='*60}")
-    print(f"\nVideos saved to:")
-    print(f"  - {output_freq}")
-    print(f"  - {output_intens}")
+    print(f"\nVideo saved to: {output_freq}")
     print("Done!")
 
 
