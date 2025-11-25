@@ -593,11 +593,11 @@ def generate_daily_frames(fire_gdf, aoi, start_date, end_date, output_dir, basem
             # Add basemap tiles (axis limits already set above)
             try:
                 if basemap_style == 'satellite':
-                    cx.add_basemap(ax, source=cx.providers.Esri.WorldImagery, attribution_size=6)
+                    cx.add_basemap(ax, source=cx.providers.Esri.WorldImagery, attribution="")
                 elif basemap_style == 'terrain':
-                    cx.add_basemap(ax, source=cx.providers.Stamen.Terrain, attribution_size=6)
+                    cx.add_basemap(ax, source=cx.providers.Stamen.Terrain, attribution="")
                 else:  # 'osm' or default
-                    cx.add_basemap(ax, source=cx.providers.OpenStreetMap.Mapnik, attribution_size=6)
+                    cx.add_basemap(ax, source=cx.providers.OpenStreetMap.Mapnik, attribution="")
             except Exception as e:
                 print(f"\nWarning: Failed to add basemap: {e}")
                 print("Continuing without basemap for this frame...")
